@@ -398,8 +398,11 @@
       <div class="sec-label">🔊 Estado de voz</div>
       <div class="voice-status" id="voice-status-box">
         <span class="vs-icon">🔊</span>
-        <span id="vs-label">Voz femenina activada</span>
+        <span id="vs-label">Cargando voz...</span>
       </div>
+      <button onclick="debugVoices()" style="margin-top:8px;background:none;border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:.6rem;color:var(--muted);cursor:pointer;font-family:inherit;width:100%;" title="Ver voces disponibles en consola">
+        🔍 Ver voces disponibles (consola)
+      </button>
     </div>
 
     <div>
@@ -478,8 +481,8 @@ function renderMath(container) {
   });
 }
 
-/* Renderiza fórmula de ejemplo en pantalla de bienvenida */
 window.addEventListener('load', () => {
+  // Mostrar fórmula de ejemplo
   setTimeout(() => {
     const preview = document.getElementById('formula-preview');
     if (preview) {
@@ -487,6 +490,9 @@ window.addEventListener('load', () => {
       renderMath(preview);
     }
   }, 300);
+
+  // Mostrar nombre real de la voz una vez que carguen
+  setTimeout(() => setVoiceStatus(false), 800);
 });
 
 /* ════════════════════════════════════════════
@@ -567,96 +573,163 @@ async function send() {
 
 /* ════════════════════════════════════════════
    VOZ — SÍNTESIS (voz femenina en español)
+   FIX: las voces son async — hay que esperar a que carguen
 ════════════════════════════════════════════ */
 
-// Lista de voces preferidas — en orden de preferencia
-const FEMALE_VOICE_NAMES = [
-  'Paulina',       // macOS / iOS español latinoamérica
-  'Mónica',        // macOS / iOS español españa
-  'Monica',
-  'Luciana',       // portugués/español
-  'Valeria',
-  'Laura',
-  'Camila',
-  'Sofía', 'Sofia',
-  'Esperanza',
-  'Penélope', 'Penelope',
-  'Isabela',
-  'female',        // genérico
-  'Female',
-];
+// Caché de voces ya cargadas
+let cachedVoices = [];
+
+// Cargar voces y guardarlas en caché — el evento se dispara cuando el navegador las tiene listas
+function loadVoices() {
+  cachedVoices = window.speechSynthesis.getVoices();
+}
+if (window.speechSynthesis) {
+  // Algunos navegadores las tienen de inmediato, otros disparan el evento después
+  loadVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+}
+
+// Muestra todas las voces disponibles en consola — útil para depurar
+function debugVoices() {
+  console.table(cachedVoices.map(v => ({ nombre: v.name, lang: v.lang, local: v.localService })));
+}
 
 function pickFemaleVoice() {
-  const voices = window.speechSynthesis.getVoices();
+  // Si aún no cargaron, intentar de nuevo
+  if (!cachedVoices.length) cachedVoices = window.speechSynthesis.getVoices();
 
-  // 1. Buscar por nombre exacto en español
-  for (const name of FEMALE_VOICE_NAMES) {
-    const v = voices.find(v =>
-      v.lang.startsWith('es') && v.name.toLowerCase().includes(name.toLowerCase())
+  // Nombres femeninos conocidos, de mayor a menor preferencia
+  const femaleNames = [
+    'Paulina',    // macOS/iOS es-MX — muy femenina y clara
+    'Monica', 'Mónica',     // macOS es-ES
+    'Luciana',              // macOS es-AR
+    'Valeria',
+    'Laura',
+    'Camila',
+    'Sofia', 'Sofía',
+    'Esperanza',
+    'Penelope', 'Penélope',
+    'Isabela',
+    'Conchita',             // Azure es-ES femenina
+    'Elvira',               // Azure es-ES
+    'Dalia',                // Google es-MX femenina
+    'female', 'Female',
+  ];
+
+  // 1ª pasada: nombre femenino conocido + idioma español
+  for (const name of femaleNames) {
+    const v = cachedVoices.find(v =>
+      v.lang.startsWith('es') && v.name.includes(name)
     );
     if (v) return v;
   }
 
-  // 2. Cualquier voz en español México
-  const mx = voices.find(v => v.lang === 'es-MX');
-  if (mx) return mx;
+  // 2ª pasada: cualquier voz que no tenga nombre claramente masculino en español
+  const maleNames = ['Jorge', 'Diego', 'Carlos', 'Miguel', 'Juan', 'Andrés', 'Andres', 'male', 'Male'];
+  const esVoices  = cachedVoices.filter(v => v.lang.startsWith('es'));
+  const notMale   = esVoices.find(v => !maleNames.some(m => v.name.includes(m)));
+  if (notMale) return notMale;
 
-  // 3. Cualquier voz en español España
-  const es = voices.find(v => v.lang === 'es-ES');
-  if (es) return es;
+  // 3ª pasada: la primera voz en español que haya
+  if (esVoices.length) return esVoices[0];
 
-  // 4. Cualquier voz en español
-  const anyEs = voices.find(v => v.lang.startsWith('es'));
-  if (anyEs) return anyEs;
+  // Último recurso: voz femenina en inglés
+  return cachedVoices.find(v => /female/i.test(v.name)) || null;
+}
 
-  // 5. Voz femenina en inglés como último recurso
-  return voices.find(v => /female/i.test(v.name)) || null;
+// Convierte LaTeX a texto hablado natural
+function latexToSpeech(text) {
+  return text
+    // — Fracciones: \frac{a}{b} → "a sobre b"
+    .replace(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, '$1 sobre $2')
+    // — Potencias: x^{n+1} → "x elevado a n más 1"
+    .replace(/\^{\s*([^}]+)\s*}/g, ' elevado a $1')
+    .replace(/\^(\w)/g, ' elevado a $1')
+    // — Subíndices: x_{n} → "x subíndice n"
+    .replace(/_\{([^}]+)\}/g, ' subíndice $1')
+    .replace(/_(\w)/g, ' subíndice $1')
+    // — Raíz: \sqrt{x} → "raíz de x"
+    .replace(/\\sqrt\s*\{([^}]+)\}/g, 'raíz cuadrada de $1')
+    .replace(/\\sqrt\s*(\w)/g,        'raíz cuadrada de $1')
+    // — Integral
+    .replace(/\\int_\{([^}]+)\}\^\{([^}]+)\}/g, 'integral de $1 a $2 de')
+    .replace(/\\int/g, 'integral de')
+    // — Límite
+    .replace(/\\lim_\{([^}]+)\}/g, 'límite cuando $1 de')
+    .replace(/\\lim/g, 'límite')
+    // — Sumatoria
+    .replace(/\\sum_\{([^}]+)\}\^\{([^}]+)\}/g, 'sumatoria de $1 hasta $2 de')
+    .replace(/\\sum/g, 'sumatoria')
+    // — Operadores especiales
+    .replace(/\\infty/g,    'infinito')
+    .replace(/\\partial/g,  'parcial')
+    .replace(/\\nabla/g,    'nabla')
+    .replace(/\\cdot/g,     'por')
+    .replace(/\\times/g,    'por')
+    .replace(/\\pm/g,       'más o menos')
+    .replace(/\\mp/g,       'menos o más')
+    .replace(/\\leq/g,      'menor o igual que')
+    .replace(/\\geq/g,      'mayor o igual que')
+    .replace(/\\neq/g,      'distinto de')
+    .replace(/\\approx/g,   'aproximadamente')
+    .replace(/\\pi/g,       'pi')
+    .replace(/\\theta/g,    'theta')
+    .replace(/\\alpha/g,    'alfa')
+    .replace(/\\beta/g,     'beta')
+    .replace(/\\gamma/g,    'gamma')
+    .replace(/\\delta/g,    'delta')
+    .replace(/\\epsilon/g,  'épsilon')
+    .replace(/\\lambda/g,   'lambda')
+    .replace(/\\sigma/g,    'sigma')
+    .replace(/\\omega/g,    'omega')
+    .replace(/\\Delta/g,    'Delta')
+    .replace(/\\Sigma/g,    'Sigma mayúscula')
+    .replace(/\\[a-zA-Z]+/g, '') // resto de comandos LaTeX
+    .replace(/[{}]/g, '')         // llaves
+    .replace(/\\\\/g, '. ')       // saltos de línea LaTeX
+    // — Símbolos Unicode matemáticos
+    .replace(/∫/g, 'integral').replace(/∂/g, 'parcial').replace(/∇/g, 'nabla')
+    .replace(/Σ/g, 'sumatoria').replace(/Π/g, 'producto').replace(/√/g, 'raíz de')
+    .replace(/→/g, 'tiende a').replace(/∞/g, 'infinito')
+    .replace(/≤/g, 'menor o igual').replace(/≥/g, 'mayor o igual').replace(/≠/g, 'distinto de')
+    .replace(/±/g, 'más o menos').replace(/·/g, 'por').replace(/×/g, 'por')
+    .replace(/lím/g, 'límite').replace(/f′/g, 'f prima').replace(/f''/g, 'f doble prima')
 }
 
 function speak(text) {
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
 
-  // Limpiar texto: quitar LaTeX y símbolos para que suene bien
-  const clean = text
-    .replace(/\$\$[\s\S]*?\$\$/g, 'fórmula matemática.')
-    .replace(/\$[^$]+\$/g, 'expresión matemática.')
-    .replace(/```[\s\S]*?```/g, 'bloque de código.')
+  // Paso 1: convertir bloques $$...$$ y $...$ a texto hablado
+  let clean = text
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => latexToSpeech(math) + '. ')
+    .replace(/\$([^$\n]+?)\$/g,     (_, math) => latexToSpeech(math))
+    // Código y markdown
+    .replace(/```[\s\S]*?```/g, 'bloque de código. ')
     .replace(/`[^`]+`/g, '')
-    .replace(/[#*_~]/g, '')
-    .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '$1 sobre $2')
-    .replace(/\\int/g, 'integral de')
-    .replace(/\\lim/g, 'límite de')
-    .replace(/\\sum/g, 'sumatoria de')
-    .replace(/\\infty/g, 'infinito')
-    .replace(/\\partial/g, 'parcial')
-    .replace(/\\sqrt\{([^}]+)\}/g, 'raíz de $1')
-    .replace(/\^(\{[^}]+\}|\w)/g, ' elevado a ')
-    .replace(/\\[a-zA-Z]+/g, '')
-    .replace(/[{}[\]]/g, '')
-    .replace(/∫/g, 'integral').replace(/∂/g, 'parcial')
-    .replace(/∇/g, 'nabla').replace(/Σ/g, 'sumatoria')
-    .replace(/lím/g, 'límite').replace(/→/g, 'tiende a')
-    .replace(/[≤≥]/g, m => m === '≤' ? 'menor o igual' : 'mayor o igual')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/[#_~]/g, '')
+    // Limpiar espacios y saltos
     .replace(/\n+/g, '. ')
     .replace(/\s{2,}/g, ' ')
     .trim()
-    .slice(0, 1400);
+    .slice(0, 1600);
 
-  currentUtt = new SpeechSynthesisUtterance(clean);
-  currentUtt.lang  = 'es-ES';
-  currentUtt.rate  = 0.92;   // un poco más lento para claridad
-  currentUtt.pitch = 1.15;   // tono ligeramente más agudo (femenino)
+  currentUtt        = new SpeechSynthesisUtterance(clean);
+  currentUtt.lang   = 'es-ES';
+  currentUtt.rate   = 0.90;
+  currentUtt.pitch  = 1.2;   // más agudo → suena más femenino cuando no hay voz femenina disponible
 
-  // Asignar voz femenina
+  // Asignar voz femenina (ya cargada en caché)
   const voice = pickFemaleVoice();
   if (voice) {
     currentUtt.voice = voice;
-    currentUtt.lang  = voice.lang;   // ajustar lang al idioma de la voz elegida
+    currentUtt.lang  = voice.lang;
   }
 
   setVoiceStatus(true);
-  currentUtt.onend  = () => setVoiceStatus(false);
+  currentUtt.onend   = () => setVoiceStatus(false);
   currentUtt.onerror = () => setVoiceStatus(false);
   window.speechSynthesis.speak(currentUtt);
 }
@@ -674,7 +747,10 @@ function setVoiceStatus(speaking) {
     icon.textContent = '🔊'; lbl.textContent = 'Hablando...';
   } else {
     icon.textContent = voiceReplyOn ? '🔊' : '🔇';
-    lbl.textContent  = voiceReplyOn ? 'Voz femenina activada' : 'Voz desactivada';
+    const v = pickFemaleVoice();
+    lbl.textContent  = voiceReplyOn
+      ? (v ? `Voz: ${v.name}` : 'Voz activada')
+      : 'Voz desactivada';
   }
 }
 
@@ -685,21 +761,35 @@ function toggleVoiceReply() {
   setVoiceStatus(false);
 }
 
-// Precargar lista de voces (el navegador las carga async)
-if (window.speechSynthesis) {
-  window.speechSynthesis.addEventListener('voiceschanged', () => {
-    window.speechSynthesis.getVoices();
-  });
-}
-
 /* ════════════════════════════════════════════
-   VOZ — RECONOCIMIENTO (hablar para preguntar)
+   VOZ — RECONOCIMIENTO DE MICRÓFONO
+   FIX: pedir permiso explícitamente antes de arrancar
+        para que funcione en HTTPS (Railway) y Chrome móvil
 ════════════════════════════════════════════ */
-function toggleMic() {
+async function toggleMic() {
+  if (isRecording) { stopMic(); return; }
+
+  // Verificar soporte
   if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    toast('Usa Chrome o Edge para el micrófono 🎤'); return;
+    toast('⚠️ Usa Chrome o Edge — Safari no soporta el micrófono');
+    return;
   }
-  isRecording ? stopMic() : startMic();
+
+  // Pedir permiso de micrófono explícitamente (necesario en móvil y HTTPS)
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      toast('🚫 Permiso de micrófono denegado. Ve a Ajustes del navegador → Permisos → Micrófono → Permitir');
+    } else if (err.name === 'NotFoundError') {
+      toast('🎤 No se encontró micrófono en este dispositivo');
+    } else {
+      toast('❌ Error de micrófono: ' + err.message);
+    }
+    return;
+  }
+
+  startMic();
 }
 
 function startMic() {
@@ -727,13 +817,24 @@ function startMic() {
     }
   };
 
-  recognition.onerror = e => { toast('Error de micrófono: ' + e.error); stopMic(); };
-  recognition.onend   = () => stopMic();
+  recognition.onerror = e => {
+    const msgs = {
+      'not-allowed':  '🚫 Permiso denegado. Habilita el micrófono en la configuración del navegador.',
+      'no-speech':    'No detecté voz. Intenta de nuevo.',
+      'network':      '❌ Error de red en reconocimiento de voz.',
+      'aborted':      '',
+    };
+    const msg = msgs[e.error] || ('Error de micrófono: ' + e.error);
+    if (msg) toast(msg);
+    stopMic();
+  };
+
+  recognition.onend = () => stopMic();
   recognition.start();
 }
 
 function stopMic() {
-  if (recognition) recognition.stop();
+  if (recognition) { try { recognition.stop(); } catch {} }
   isRecording = false;
   document.getElementById('mic-btn').classList.remove('rec');
   document.getElementById('mic-btn').textContent = '🎤';
