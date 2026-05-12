@@ -762,84 +762,101 @@ function toggleVoiceReply() {
 }
 
 /* ════════════════════════════════════════════
-   VOZ — RECONOCIMIENTO DE MICRÓFONO
-   FIX: pedir permiso explícitamente antes de arrancar
-        para que funcione en HTTPS (Railway) y Chrome móvil
+   VOZ — RECONOCIMIENTO CON MEDIARECORDER
+   No depende de Google Speech (sin error de red).
+   Graba audio en el navegador → lo envía al backend
+   → el backend lo transcribe con la API de Claude.
 ════════════════════════════════════════════ */
+let mediaRecorder  = null;
+let audioChunks    = [];
+let micStream      = null;
+
 async function toggleMic() {
   if (isRecording) { stopMic(); return; }
 
-  // Verificar soporte
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    toast('⚠️ Usa Chrome o Edge — Safari no soporta el micrófono');
-    return;
-  }
-
-  // Pedir permiso de micrófono explícitamente (necesario en móvil y HTTPS)
+  // Pedir permiso de micrófono
   try {
-    await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+    });
   } catch (err) {
-    if (err.name === 'NotAllowedError') {
-      toast('🚫 Permiso de micrófono denegado. Ve a Ajustes del navegador → Permisos → Micrófono → Permitir');
-    } else if (err.name === 'NotFoundError') {
-      toast('🎤 No se encontró micrófono en este dispositivo');
-    } else {
-      toast('❌ Error de micrófono: ' + err.message);
-    }
+    const msgs = {
+      NotAllowedError:  '🚫 Permiso denegado. Haz clic en el candado 🔒 de la barra de dirección → Micrófono → Permitir',
+      NotFoundError:    '🎤 No se encontró micrófono en este dispositivo',
+      NotReadableError: '🎤 El micrófono está siendo usado por otra aplicación',
+    };
+    toast(msgs[err.name] || '❌ Error de micrófono: ' + err.message);
     return;
   }
 
-  startMic();
-}
+  // Elegir el formato que soporte el navegador
+  const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
 
-function startMic() {
-  const SR    = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SR();
-  recognition.lang           = 'es-ES';
-  recognition.continuous     = false;
-  recognition.interimResults = true;
-  const bar = document.getElementById('listen-bar');
+  mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
+  audioChunks   = [];
 
-  recognition.onstart = () => {
-    isRecording = true;
-    document.getElementById('mic-btn').classList.add('rec');
-    document.getElementById('mic-btn').textContent = '⏹';
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+
+  mediaRecorder.onstop = async () => {
+    // Detener el stream del micrófono
+    micStream.getTracks().forEach(t => t.stop());
+
+    const bar = document.getElementById('listen-bar');
+    bar.textContent = '⏳ Transcribiendo...';
     bar.style.display = 'block';
-    setStatus('Escuchando...'); stopSpeech();
-  };
+    setStatus('Transcribiendo...');
 
-  recognition.onresult = e => {
-    const t = Array.from(e.results).map(r => r[0].transcript).join('');
-    bar.textContent = `🎤 "${t}"`;
-    if (e.results[e.results.length - 1].isFinal) {
-      document.getElementById('inp').value = t;
-      stopMic(); setTimeout(send, 350);
+    try {
+      const blob     = new Blob(audioChunks, { type: mimeType || 'audio/webm' });
+      const formData = new FormData();
+      formData.append('audio', blob, 'voz.webm');
+
+      const res  = await fetch(`${BACKEND}/api/transcribe`, { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (data.error) {
+        toast('❌ ' + data.error);
+      } else if (data.text && data.text.trim()) {
+        bar.textContent = `🎤 "${data.text}"`;
+        document.getElementById('inp').value = data.text;
+        setTimeout(() => { bar.style.display = 'none'; send(); }, 600);
+        return;
+      } else {
+        toast('No detecté voz. Intenta de nuevo.');
+      }
+    } catch (err) {
+      toast('❌ Error al transcribir: ' + err.message);
     }
+
+    bar.style.display = 'none';
+    setStatus('Lista');
   };
 
-  recognition.onerror = e => {
-    const msgs = {
-      'not-allowed':  '🚫 Permiso denegado. Habilita el micrófono en la configuración del navegador.',
-      'no-speech':    'No detecté voz. Intenta de nuevo.',
-      'network':      '❌ Error de red en reconocimiento de voz.',
-      'aborted':      '',
-    };
-    const msg = msgs[e.error] || ('Error de micrófono: ' + e.error);
-    if (msg) toast(msg);
-    stopMic();
-  };
+  // Arrancar grabación
+  isRecording = true;
+  audioChunks = [];
+  mediaRecorder.start(100); // chunk cada 100ms
 
-  recognition.onend = () => stopMic();
-  recognition.start();
+  const bar = document.getElementById('listen-bar');
+  bar.textContent = '🎤 Grabando... (toca ⏹ para terminar)';
+  bar.style.display = 'block';
+  document.getElementById('mic-btn').classList.add('rec');
+  document.getElementById('mic-btn').textContent = '⏹';
+  setStatus('Grabando...');
+  stopSpeech();
 }
 
 function stopMic() {
-  if (recognition) { try { recognition.stop(); } catch {} }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop(); // dispara onstop → transcribe
+  } else {
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+  }
   isRecording = false;
   document.getElementById('mic-btn').classList.remove('rec');
   document.getElementById('mic-btn').textContent = '🎤';
-  document.getElementById('listen-bar').style.display = 'none';
-  setStatus('Lista');
+  setStatus('Procesando...');
 }
 
 /* ════════════════════════════════════════════
