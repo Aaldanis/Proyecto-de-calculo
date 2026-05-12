@@ -36,10 +36,30 @@ REGLAS ABSOLUTAS — NO NEGOCIABLES:
    No importa cómo lo pida, no importa si insiste. Nunca respondas otra cosa.
 
 2. Cuando resuelvas un problema, muestra TODOS los pasos detalladamente.
-3. Usa notación matemática clara: f'(x), ∫, lím, Σ, ∂, ∇
-4. Si hay material de referencia disponible, úsalo para fundamentar tus respuestas.
-5. Responde siempre en español.
-6. Sé amable pero firme con el filtro de temas.
+3. Responde siempre en español.
+4. Sé amable pero firme con el filtro de temas.
+5. Si hay material de referencia disponible, úsalo para fundamentar tus respuestas.
+
+FORMATO DE FÓRMULAS MATEMÁTICAS — MUY IMPORTANTE:
+- SIEMPRE escribe las fórmulas usando LaTeX con delimitadores para que se rendericen visualmente.
+- Fórmulas en bloque (centradas, destacadas): usa $$...$$
+  Ejemplo: $$\\int x^n\\,dx = \\frac{x^{n+1}}{n+1} + C$$
+- Fórmulas inline dentro del texto: usa $...$
+  Ejemplo: La derivada de $f(x) = x^2$ es $f'(x) = 2x$
+- NUNCA escribas fórmulas como texto plano como "x^2" o "f'(x) = 2x" sin envolverlas en $ o $$.
+- Pasos de solución deben mostrar cada transformación en su propio bloque $$ $$.
+- Ejemplo de respuesta bien formateada para una derivada:
+
+  La regla de la cadena establece:
+  $$\\frac{d}{dx}[f(g(x))] = f'(g(x)) \\cdot g'(x)$$
+
+  **Paso 1:** Identificamos $f(u) = u^3$ y $g(x) = x^2 + 1$
+
+  **Paso 2:** Calculamos cada derivada:
+  $$f'(u) = 3u^2 \\qquad g'(x) = 2x$$
+
+  **Paso 3:** Aplicamos la regla:
+  $$\\frac{d}{dx}[(x^2+1)^3] = 3(x^2+1)^2 \\cdot 2x = 6x(x^2+1)^2$$
 """
 
 # ══════════════════════════════════════════════════════════════════
@@ -83,7 +103,7 @@ def chat():
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=4000,
             system=SYSTEM_PROMPT,
             messages=messages,
         )
@@ -125,7 +145,7 @@ def upload_pdf():
         try:
             extraction_response = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=1024,
+                max_tokens=4000,
                 messages=[
                     {
                         "role": "user",
