@@ -762,115 +762,107 @@ function toggleVoiceReply() {
 }
 
 /* ════════════════════════════════════════════
-   VOZ — RECONOCIMIENTO GRATIS (SpeechRecognition nativo)
-   FIX del error de red: pedir permiso de micrófono
-   ANTES de iniciar SpeechRecognition. Sin esto, Chrome
-   da "network" error porque no tiene acceso al audio.
+   VOZ — RECONOCIMIENTO con MediaRecorder + Groq
+   SpeechRecognition nativo falla en Railway porque
+   Chrome necesita conectarse a Google y esa conexión
+   se bloquea. Solución: grabamos con MediaRecorder
+   (100% local en el navegador) y enviamos al backend
+   donde Groq (gratis) hace la transcripción.
 ════════════════════════════════════════════ */
-let micPermissionGranted = false;
+let mediaRecorder = null;
+let audioChunks   = [];
+let micStream     = null;
 
 async function toggleMic() {
   if (isRecording) { stopMic(); return; }
 
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    toast('⚠️ Usa Chrome o Edge — Firefox no soporta reconocimiento de voz');
+  // Pedir permiso de micrófono
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount:    1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      }
+    });
+  } catch (err) {
+    const msgs = {
+      NotAllowedError:  '🚫 Permiso denegado. Haz clic en el candado 🔒 de la barra de URL → Micrófono → Permitir',
+      NotFoundError:    '🎤 No se encontró micrófono',
+      NotReadableError: '🎤 El micrófono está en uso por otra app',
+    };
+    toast(msgs[err.name] || '❌ ' + err.message);
     return;
   }
 
-  // PASO CRÍTICO: pedir permiso de micrófono explícitamente primero
-  // Sin esto Chrome da error de red al intentar SpeechRecognition
-  if (!micPermissionGranted) {
+  // Elegir formato soportado por el navegador
+  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+  mediaRecorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : {});
+  audioChunks   = [];
+
+  mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) audioChunks.push(e.data); };
+
+  mediaRecorder.onstop = async () => {
+    // Apagar el micrófono físico
+    micStream.getTracks().forEach(t => t.stop());
+
+    const bar = document.getElementById('listen-bar');
+    bar.textContent   = '⏳ Transcribiendo...';
+    bar.style.display = 'block';
+    setStatus('Transcribiendo...');
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Cerrar el stream inmediatamente — solo lo necesitábamos para el permiso
-      stream.getTracks().forEach(t => t.stop());
-      micPermissionGranted = true;
-    } catch (err) {
-      const msgs = {
-        NotAllowedError:  '🚫 Permiso denegado. Haz clic en el candado 🔒 en la barra de URL → Micrófono → Permitir → recarga la página',
-        NotFoundError:    '🎤 No se encontró micrófono en este dispositivo',
-        NotReadableError: '🎤 El micrófono está en uso por otra aplicación',
-      };
-      toast(msgs[err.name] || '❌ Error: ' + err.message);
-      return;
+      const blob     = new Blob(audioChunks, { type: mime || 'audio/webm' });
+      const formData = new FormData();
+      formData.append('audio', blob, 'voz.webm');
+
+      const res  = await fetch(`${BACKEND}/api/transcribe`, { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (data.error) {
+        toast('❌ ' + data.error);
+      } else if (data.text?.trim()) {
+        bar.textContent = `🎤 "${data.text}"`;
+        document.getElementById('inp').value = data.text;
+        setTimeout(() => { bar.style.display = 'none'; send(); }, 600);
+        return;
+      } else {
+        toast('🔇 No detecté voz. Intenta de nuevo.');
+      }
+    } catch (e) {
+      toast('❌ Error al transcribir: ' + e.message);
     }
-  }
 
-  startMic();
-}
+    bar.style.display = 'none';
+    setStatus('Lista');
+  };
 
-function startMic() {
-  const SR    = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SR();
-  recognition.lang               = 'es-ES';
-  recognition.continuous         = false;
-  recognition.interimResults     = true;
-  recognition.maxAlternatives    = 1;
+  // Iniciar grabación
+  isRecording = true;
+  mediaRecorder.start(100);
 
   const bar = document.getElementById('listen-bar');
-
-  recognition.onstart = () => {
-    isRecording = true;
-    document.getElementById('mic-btn').classList.add('rec');
-    document.getElementById('mic-btn').textContent = '⏹';
-    bar.textContent = '🎤 Escuchando... habla ahora';
-    bar.style.display = 'block';
-    setStatus('Escuchando...');
-    stopSpeech();
-  };
-
-  recognition.onresult = e => {
-    const transcript = Array.from(e.results)
-      .map(r => r[0].transcript).join('');
-    bar.textContent = `🎤 "${transcript}"`;
-
-    if (e.results[e.results.length - 1].isFinal) {
-      document.getElementById('inp').value = transcript;
-      stopMic();
-      setTimeout(send, 300);
-    }
-  };
-
-  recognition.onerror = e => {
-    const msgs = {
-      'not-allowed': '🚫 Micrófono bloqueado. Recarga la página y acepta el permiso.',
-      'no-speech':   '🔇 No escuché nada. Intenta de nuevo.',
-      'network':     '📶 Error de red. Revisa tu conexión a internet.',
-      'aborted':     '',
-    };
-    const msg = msgs[e.error];
-    if (msg) toast(msg);
-
-    // Si es error de red, resetear el permiso para que lo pida de nuevo
-    if (e.error === 'network' || e.error === 'not-allowed') {
-      micPermissionGranted = false;
-    }
-    stopMic();
-  };
-
-  recognition.onend = () => {
-    // Si terminó sin resultado y seguía grabando, limpiar
-    if (isRecording) stopMic();
-  };
-
-  try {
-    recognition.start();
-  } catch (err) {
-    toast('❌ No se pudo iniciar el micrófono: ' + err.message);
-    stopMic();
-  }
+  bar.textContent   = '🎤 Grabando... toca ⏹ para terminar';
+  bar.style.display = 'block';
+  document.getElementById('mic-btn').classList.add('rec');
+  document.getElementById('mic-btn').textContent = '⏹';
+  setStatus('Grabando...');
+  stopSpeech();
 }
 
 function stopMic() {
-  if (recognition) {
-    try { recognition.stop(); } catch {}
-    recognition = null;
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();   // dispara onstop → transcribe
+  } else {
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    document.getElementById('listen-bar').style.display = 'none';
+    setStatus('Lista');
   }
   isRecording = false;
   document.getElementById('mic-btn').classList.remove('rec');
   document.getElementById('mic-btn').textContent = '🎤';
-  document.getElementById('listen-bar').style.display = 'none';
-  setStatus('Lista');
 }
 
 /* ════════════════════════════════════════════
