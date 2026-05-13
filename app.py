@@ -1,4 +1,4 @@
-import os
+mport os
 import base64
 import json
 from flask import Flask, request, jsonify, send_from_directory
@@ -182,72 +182,6 @@ def upload_pdf():
             results.append({"name": f.filename, "status": f"error: {str(e)}"})
 
     return jsonify({"results": results, "total_docs": len(PDF_KNOWLEDGE)})
-
-
-# ══════════════════════════════════════════════════════════════════
-# TRANSCRIPCIÓN DE VOZ — recibe audio y lo transcribe con Claude
-# No depende de Google Speech, funciona en cualquier red
-# ══════════════════════════════════════════════════════════════════
-@app.route("/api/transcribe", methods=["POST"])
-def transcribe():
-    try:
-        if "audio" not in request.files:
-            return jsonify({"error": "No se recibió audio"}), 400
-
-        audio_file = request.files["audio"]
-        audio_bytes = audio_file.read()
-
-        if len(audio_bytes) < 1000:
-            return jsonify({"text": ""})  # audio demasiado corto / silencio
-
-        # Convertir audio a base64
-        audio_b64 = base64.standard_b64encode(audio_bytes).decode("utf-8")
-
-        # Detectar tipo MIME
-        mime_type = audio_file.mimetype or "audio/webm"
-        # Claude soporta: audio/wav, audio/mp3, audio/ogg, audio/webm, audio/flac, audio/aac
-        # Si el navegador envía audio/webm;codecs=opus lo normalizamos
-        if "webm" in mime_type:
-            mime_type = "audio/webm"
-        elif "ogg" in mime_type:
-            mime_type = "audio/ogg"
-        elif "mp4" in mime_type:
-            mime_type = "audio/mp4"
-
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=300,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Transcribe exactamente lo que se dice en este audio. "
-                                "El audio es en español y contiene preguntas sobre cálculo matemático. "
-                                "Responde ÚNICAMENTE con la transcripción literal, sin explicaciones ni puntuación extra."
-                            ),
-                        },
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": audio_b64,
-                            },
-                        },
-                    ],
-                }
-            ],
-        )
-
-        transcribed = response.content[0].text.strip()
-        return jsonify({"text": transcribed})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 
 @app.route("/admin/docs", methods=["GET"])
