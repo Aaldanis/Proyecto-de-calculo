@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import anthropic
 import tempfile
-from groq import Groq
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
@@ -221,7 +220,7 @@ def transcribe():
             tmp_path = tmp.name
 
         try:
-            groq_client = Groq(api_key=groq_key)
+            groq_client = GroqClient(api_key=groq_key)
             with open(tmp_path, "rb") as f:
                 result = groq_client.audio.transcriptions.create(
                     model="whisper-large-v3",
