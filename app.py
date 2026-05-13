@@ -4,6 +4,8 @@ import json
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import anthropic
+import tempfile
+from groq import Groq
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
@@ -182,6 +184,60 @@ def upload_pdf():
             results.append({"name": f.filename, "status": f"error: {str(e)}"})
 
     return jsonify({"results": results, "total_docs": len(PDF_KNOWLEDGE)})
+
+
+# ══════════════════════════════════════════════════════════════════
+# TRANSCRIPCIÓN DE VOZ con Groq Whisper — GRATIS
+# El navegador graba el audio con MediaRecorder y lo manda aquí.
+# Groq lo transcribe con Whisper-large-v3 sin costo.
+# ══════════════════════════════════════════════════════════════════
+@app.route("/api/transcribe", methods=["POST"])
+def transcribe():
+    try:
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if not groq_key:
+            return jsonify({"error": "GROQ_API_KEY no configurada. Agrégala en Railway → Variables."}), 500
+
+        if "audio" not in request.files:
+            return jsonify({"error": "No se recibió audio"}), 400
+
+        audio_file = request.files["audio"]
+        audio_bytes = audio_file.read()
+
+        if len(audio_bytes) < 500:
+            return jsonify({"text": ""})  # silencio o demasiado corto
+
+        # Detectar extensión según MIME
+        mime = (audio_file.mimetype or "audio/webm").lower()
+        ext = ".webm"
+        if "ogg"  in mime: ext = ".ogg"
+        elif "mp4" in mime: ext = ".mp4"
+        elif "wav" in mime: ext = ".wav"
+        elif "flac" in mime: ext = ".flac"
+
+        # Guardar en archivo temporal (Groq necesita un archivo, no bytes)
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            groq_client = Groq(api_key=groq_key)
+            with open(tmp_path, "rb") as f:
+                result = groq_client.audio.transcriptions.create(
+                    model="whisper-large-v3",
+                    file=(f"audio{ext}", f, mime),
+                    language="es",
+                    prompt="cálculo, derivadas, integrales, límites, ecuaciones diferenciales",
+                    response_format="text",
+                )
+            # result es directamente el string con Groq
+            text = result.strip() if isinstance(result, str) else result.text.strip()
+            return jsonify({"text": text})
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/admin/docs", methods=["GET"])
